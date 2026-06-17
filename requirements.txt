@@ -1,0 +1,5 @@
+streamlit
+python-docx
+sentence-transformers
+scikit-learn
+google-generativeai
