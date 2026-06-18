@@ -2,9 +2,9 @@ import streamlit as st
 from docx import Document
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-import google.generativeai as genai
+from google import genai
 
-# ---------------- UI CONFIG ----------------
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
     page_title="HR Policy Assistant",
     page_icon="🏢",
@@ -12,25 +12,25 @@ st.set_page_config(
 )
 
 st.title("🏢 HR Policy Assistant")
-st.caption("Ask anything about company HR policies")
+st.write("Ask anything about HR policies and get instant answers.")
 
-# ---------------- API KEY ----------------
-genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+# ---------------- API KEY (Streamlit Secrets) ----------------
+client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
 
-# ---------------- LOAD DOC ----------------
+# ---------------- LOAD HR DOCUMENT ----------------
 @st.cache_data
-def load_text():
+def load_doc():
     doc = Document("hr_manual.docx")
-    text = "\n".join([p.text for p in doc.paragraphs])
+    text = "\n".join([p.text for p in doc.paragraphs if p.text.strip() != ""])
     return text
 
-text = load_text()
+text = load_doc()
 
 # ---------------- CHUNKING ----------------
 chunk_size = 1500
 chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
+# ---------------- TF-IDF VECTOR SEARCH ----------------
 vectorizer = TfidfVectorizer()
 chunk_vectors = vectorizer.fit_transform(chunks)
 
@@ -38,50 +38,60 @@ chunk_vectors = vectorizer.fit_transform(chunks)
 if "chat" not in st.session_state:
     st.session_state.chat = []
 
-# ---------------- INPUT BOX ----------------
-user_input = st.text_input("💬 Ask your HR question:")
+# ---------------- INPUT ----------------
+user_question = st.text_input("💬 Ask your HR question:")
 
-if user_input:
+if user_question:
 
-    question_vector = vectorizer.transform([user_input])
-    similarities = cosine_similarity(question_vector, chunk_vectors)[0]
-
-    best_chunk = chunks[similarities.argmax()]
+    question_vec = vectorizer.transform([user_question])
+    scores = cosine_similarity(question_vec, chunk_vectors)[0]
+    best_chunk = chunks[scores.argmax()]
 
     prompt = f"""
-    You are an HR assistant.
-    Answer ONLY using the context below.
+You are a professional HR assistant.
 
-    Context:
-    {best_chunk}
+Rules:
+- Answer ONLY from the given HR policy context
+- If answer is not found, say "Not mentioned in HR manual"
+- Keep answer simple and professional
 
-    Question:
-    {user_input}
-    """
+Context:
+{best_chunk}
 
-    response = model.generate_content(prompt)
+Question:
+{user_question}
+"""
+
+    # ---------------- GEMINI RESPONSE ----------------
+    response = client.models.generate_content(
+        model="gemini-1.5-flash",
+        contents=prompt
+    )
 
     answer = response.text
 
     # save chat
-    st.session_state.chat.append(("You", user_input))
-    st.session_state.chat.append(("AI", answer))
+    st.session_state.chat.append(("You", user_question))
+    st.session_state.chat.append(("HR Bot", answer))
 
-# ---------------- CHAT DISPLAY ----------------
+# ---------------- CHAT UI ----------------
+st.divider()
+
 for role, msg in st.session_state.chat:
     if role == "You":
-        st.markdown(f"**🧑 You:** {msg}")
+        st.markdown(f"🧑 **You:** {msg}")
     else:
-        st.markdown(f"**🤖 HR Bot:** {msg}")
-        st.divider()
+        st.markdown(f"🤖 **HR Bot:** {msg}")
+        st.markdown("---")
 
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
-    st.header("📌 Instructions")
-    st.write("""
-    - Ask questions about HR policies  
-    - Example: leave policy, dress code  
-    - AI will search HR manual and answer  
+    st.header("📌 HR Assistant Guide")
+
+    st.info("""
+    ✔ Ask HR policy questions  
+    ✔ Example: leave policy, dress code  
+    ✔ Answers come from HR manual  
     """)
 
     if st.button("🧹 Clear Chat"):
