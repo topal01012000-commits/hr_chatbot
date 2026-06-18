@@ -1,98 +1,71 @@
 import streamlit as st
 from docx import Document
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
-from google import genai
+import google.generativeai as genai
+import os
+from dotenv import load_dotenv
 
-# ---------------- PAGE CONFIG ----------------
-st.set_page_config(
-    page_title="HR Policy Assistant",
-    page_icon="🏢",
-    layout="centered"
-)
+# -------------------
+# Load API Key
+# -------------------
+load_dotenv("key.env")
 
-st.title("🏢 HR Policy Assistant")
-st.write("Ask anything about HR policies and get instant answers.")
+genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+model_llm = genai.GenerativeModel("gemini-2.5-flash")
 
-# ---------------- API KEY (Streamlit Secrets) ----------------
-client = genai.Client(api_key=st.secrets["GOOGLE_API_KEY"])
-
-# ---------------- LOAD HR DOCUMENT ----------------
+# -------------------
+# Load HR Manual
+# -------------------
 @st.cache_data
-def load_doc():
+def load_data():
     doc = Document("hr_manual.docx")
-    text = "\n".join([p.text for p in doc.paragraphs if p.text.strip() != ""])
-    return text
+    text = "\n".join([p.text for p in doc.paragraphs])
 
-text = load_doc()
+    chunk_size = 2000
+    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
 
-# ---------------- CHUNKING ----------------
-chunk_size = 1500
-chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
+    embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+    embeddings = embed_model.encode(chunks)
 
-# ---------------- TF-IDF VECTOR SEARCH ----------------
-vectorizer = TfidfVectorizer()
-chunk_vectors = vectorizer.fit_transform(chunks)
+    return chunks, embeddings, embed_model
 
-# ---------------- CHAT HISTORY ----------------
-if "chat" not in st.session_state:
-    st.session_state.chat = []
+chunks, chunk_embeddings, embed_model = load_data()
 
-# ---------------- INPUT ----------------
-user_question = st.text_input("💬 Ask your HR question:")
+# -------------------
+# UI
+# -------------------
+st.title("🏢 HR Policy Chatbot")
+st.write("Ask any question related to HR policies")
 
-if user_question:
+question = st.text_input("Enter your question:")
 
-    question_vec = vectorizer.transform([user_question])
-    scores = cosine_similarity(question_vec, chunk_vectors)[0]
-    best_chunk = chunks[scores.argmax()]
+if question:
+
+    q_embedding = embed_model.encode([question])
+
+    scores = cosine_similarity(q_embedding, chunk_embeddings)[0]
+
+    top_indices = scores.argsort()[-3:][::-1]
+    top_chunks = [chunks[i] for i in top_indices]
+
+    context = "\n\n---\n\n".join(top_chunks)
 
     prompt = f"""
-You are a professional HR assistant.
+You are an HR assistant.
 
-Rules:
-- Answer ONLY from the given HR policy context
-- If answer is not found, say "Not mentioned in HR manual"
-- Keep answer simple and professional
+RULES:
+- Answer ONLY using HR manual content.
+- If not found, say "Not mentioned in HR policy".
 
-Context:
-{best_chunk}
+HR CONTENT:
+{context}
 
-Question:
-{user_question}
+QUESTION:
+{question}
 """
 
-    # ---------------- GEMINI RESPONSE ----------------
-    response = client.models.generate_content(
-        model="gemini-1.5-flash-latest",
-        contents=prompt
-    )
+    response = model_llm.generate_content(prompt)
 
-    answer = response.text
-
-    # save chat
-    st.session_state.chat.append(("You", user_question))
-    st.session_state.chat.append(("HR Bot", answer))
-
-# ---------------- CHAT UI ----------------
-st.divider()
-
-for role, msg in st.session_state.chat:
-    if role == "You":
-        st.markdown(f"🧑 **You:** {msg}")
-    else:
-        st.markdown(f"🤖 **HR Bot:** {msg}")
-        st.markdown("---")
-
-# ---------------- SIDEBAR ----------------
-with st.sidebar:
-    st.header("📌 HR Assistant Guide")
-
-    st.info("""
-    ✔ Ask HR policy questions  
-    ✔ Example: leave policy, dress code  
-    ✔ Answers come from HR manual  
-    """)
-
-    if st.button("🧹 Clear Chat"):
-        st.session_state.chat = []
+    st.subheader("Answer")
+    st.write(response.text)
